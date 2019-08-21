@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 
 # This script changes variables names in C++ files from
-# camelCase style to snake_case style
+# camelCase style to snake_case style, with corresponding
+# naming conventions observed (e.g. "bIsFoo" => "is_foo")
 #
 #
 # Limitations caused by lack of syntax awareness:
@@ -35,31 +36,34 @@ BOOLEAN_PREFIXES = [
     "does", "do", "did", "done",
     "find", "found", "get", "got"
 ]
-COMMON_ABBREVIATIONS = [
-    # NOTE no "obj", "num", "it", "iter", "var", "src", "dest", "std",
-    #         "ret", "init", "ptr", "op"
-    ("res", "result"),  ("buf", "buffer"),  ("vec", "vector"),  ("msg", "message"),  
-    ("seq", "sequence"), ("cnt", "count"),  ("mem", "memory"),  ("val", "value"),  
-    ("loc", "location"), ("ans", "answer"), ("ctx", "context"), ("elem", "element"),
-    ("ty", "type"),
-]
+COMMON_ABBREVIATIONS = {
+    # NOTE no "obj", "num", "it", "iter", "var", "src", "dest",
+    #         "ret", "init", "ptr", "op", "db"
+    "res" : "result",   "buf" : "buffer", "vec" : "vector",  "msg"  : "message",  
+    "seq" : "sequence", "cnt" : "count",  "mem" : "memory",  "val"  : "value",  
+    "loc" : "location", "ans" : "answer", "ctx" : "context", "elem" : "element",
+    "ty"  : "type",
+}
 
 CAMEL_CASE_PIECE_REGEX = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|[0-9]|_|$)|[0-9]+|\_")
 def compute_snake_case(camel_case, testing=False):
     splitted_words = CAMEL_CASE_PIECE_REGEX.findall(camel_case)
     if testing:
         print("%-15s => %s" % (camel_case, splitted_words))
-    assert len(splitted_words) >= 2
     splitted_words = list(map(lambda w : w.lower(), splitted_words))
-    # special rules in conversion
     ends_with_underscore = False
     if splitted_words[-1] == '_':
         splitted_words = splitted_words[:-1]
         ends_with_underscore = True
-    if (splitted_words[0] == "p" or splitted_words[0] == "m"
-        or splitted_words[0] == "n" or splitted_words[0] == "f"):
+    assert len(splitted_words) >= 2
+    # special rules in conversion: observe naming conventions for snake_case 
+    had_hungarian_prefix = False
+    if ((splitted_words[0] == "p" or splitted_words[0] == "m"
+        or splitted_words[0] == "n" or splitted_words[0] == "f")
+        and splitted_words[1].isalpha()):
+        had_hungarian_prefix = True
         splitted_words = splitted_words[1:]
-    if splitted_words[0] == "b":
+    if splitted_words[0] == "b" and splitted_words[1].isalpha():
         if splitted_words[1] in BOOLEAN_PREFIXES:
             splitted_words = splitted_words[1:]
         else:
@@ -68,9 +72,11 @@ def compute_snake_case(camel_case, testing=False):
         splitted_words = [ "iter" ] + splitted_words[1:]
     if splitted_words[-1] == "num":
         splitted_words = splitted_words[:-1] + [ "number" ]
-    for e in COMMON_ABBREVIATIONS:
-        splitted_words = list(map(lambda w : e[1] if w == e[0] else w, splitted_words))
+    splitted_words = [ COMMON_ABBREVIATIONS.get(w, w) for w in splitted_words ]
     # make snake_case
+    if not ((len(splitted_words) >= 1 if had_hungarian_prefix else len(splitted_words) >= 2)
+            and splitted_words[0].isalpha()):
+        raise RuntimeError("'%s' => %s" % (camel_case, splitted_words))
     snake_case = '_'.join(splitted_words) + ('_' if ends_with_underscore else '')
     return snake_case
 
@@ -95,7 +101,7 @@ def process_one_line(old_line, in_ctor_init_list=False, testing=False):
         snake_case_var = compute_snake_case(camel_case_var, testing)
         line = line[:camel_case_var_start] + snake_case_var + line[camel_case_var_end:]
 
-def process_one_file(filepath, echo, rewrite):
+def process_one_file(filepath, handling_dir, echo, rewrite):
     with open(filepath, 'r') as f:
         raw_lines = f.readlines()
     instance_count, new_lines = 0, []
@@ -106,34 +112,41 @@ def process_one_file(filepath, echo, rewrite):
     for i, raw_line in enumerate(raw_lines):
         old_line = raw_line.rstrip()
         ### check if in ctor initializer list (1)
-        besteffort_index_of_colon = old_line.find(':') # -1 if absent
+        besteffort_index_of_colon = old_line.find(": ") # -1 if absent
         if besteffort_index_of_colon >= 0:
             if ((besteffort_index_of_colon >= 2
                  and old_line[besteffort_index_of_colon - 2:besteffort_index_of_colon] == ") "
                  and " ?" not in old_line[:besteffort_index_of_colon])
                 or (i >= 1 and len(old_line[:besteffort_index_of_colon].strip()) == 0
-                 and raw_lines[i - 1].rstrip().endswith(')')
+                 and raw_lines[i - 1].rstrip().endswith(")")
                  and (" ?" not in raw_lines[i - 1]))):
                 besteffort_in_ctor_init_list = True
         ### essential works
-        besteffort_ctor_list_flag = '#' if besteffort_in_ctor_init_list else ' '
+        new_line, instance_count_in_line = process_one_line(
+            old_line, besteffort_in_ctor_init_list)
         if echo:
-            print("-" + besteffort_ctor_list_flag + "|\x1b[38;5;217m" + old_line + "\x1b[0m")
-        new_line, instance_count_in_line = process_one_line(old_line, besteffort_in_ctor_init_list)
-        if echo:
-            print("+" + besteffort_ctor_list_flag + "|\x1b[32m" + new_line + "\x1b[0m")
+            ctor_init_list_mark = "\x1b[48;5;237m" if besteffort_in_ctor_init_list else "\x1b[0m"
+            if instance_count_in_line > 0:
+                print("-|\x1b[0m" + ctor_init_list_mark
+                    + "\x1b[35m" + old_line + "\x1b[0m")
+                print("+|\x1b[0m" + ctor_init_list_mark
+                    + "\x1b[32m" + new_line + "\x1b[0m")
+            else:
+                print(" |\x1b[0m" + ctor_init_list_mark + old_line + "\x1b[0m")
         new_lines.append(new_line)
         instance_count += instance_count_in_line
         ### check if in ctor initializer list (2)
         if besteffort_in_ctor_init_list:
-            besteffort_index_of_open_brace = old_line.find('{') # -1 if absent
+            besteffort_index_of_open_brace = old_line.find(" {") # -1 if absent
             if besteffort_index_of_open_brace >= 0:
                 besteffort_in_ctor_init_list = False
     if rewrite and instance_count:
         with open(filepath, 'w') as f:
-            f.write('\n'.join(new_lines) + '\n')
-    if not rewrite and not echo:
-        print('\n'.join(new_lines) + '\n')
+            f.write('\n'.join(new_lines) + "\n\n")
+    if not rewrite and not echo and not handling_dir:
+        sys.stderr.write("--- begin : %s ---\n" % filepath)
+        sys.stdout.write('\n'.join(new_lines) + "\n\n")
+        sys.stderr.write("--- end : %s ---\n" % filepath)
     return instance_count
 
 def is_c_cxx(filename):
@@ -147,10 +160,12 @@ def work(args):
         new_line, _ = process_one_line(args.test, testing=True)
         print("\x1b[32;m" + new_line + "\x1b[0m")
         return
-    files_to_read = []
+    files_to_read, handling_dir = [], False
     if os.path.isfile(args.path):
         files_to_read = [ args.path ]
-    else: # os.path.isdir(args.path)
+    else:
+        assert os.path.isdir(args.path)
+        handling_dir = True
         for (dirpath, dirnames, filenames) in os.walk(args.path, followlinks=True):
             for filename in filter(lambda f : is_c_cxx(f), filenames):
                 if (((os.sep + "test-inputs") in dirpath)
@@ -158,26 +173,32 @@ def work(args):
                     or ((os.sep + "linters") in dirpath)):
                     continue
                 files_to_read.append(os.path.join(dirpath, filename))
+    processed_instances_sum = 0
     for filepath in files_to_read:
         sys.stderr.write("%s .." % (filepath))
         sys.stderr.flush()
-        processed_instances = process_one_file(filepath, echo=args.echo, rewrite=args.rewrite)
+        processed_instances = process_one_file(
+            filepath, handling_dir=handling_dir, echo=args.echo, rewrite=args.rewrite)
+        processed_instances_sum += processed_instances
         sys.stderr.write("\r%s count: %d\n" % (filepath, processed_instances))
         sys.stderr.flush()
     if not args.rewrite:
+        if handling_dir:
+            sys.stderr.write("file count: %d, instance count: %d\n" % (
+                len(files_to_read), processed_instances_sum))
         sys.stderr.write("\nTo rewrite files, use '--rewrite'; to echo lines, use '--echo'\n")
     return 0
 
 def main():
     parser = argparse.ArgumentParser(description="C/C++ vairable name camelCase => snake_case")
     parser.add_argument("path", nargs='?', default=None,
-                        help="file or directory path")
+                        help="file or directory")
     parser.add_argument("--rewrite", action="store_true",
-                        help="rewrite visited files")
+                        help="rewrite visited C/C++ files [[caution advised]]")
     parser.add_argument("-e", "--echo", action='store_true',
-                        help="(dev) echo each line")
+                        help="echo each line, before and after")
     parser.add_argument("-t", "--test", metavar="\"..\"", type=str, default=None,
-                        help="(dev) test one line")
+                        help="(dev) test one line in \"..\"")
     args = parser.parse_args()
     has_error = False
     if args.test == None and args.path == None:
